@@ -48,13 +48,11 @@ def oracle(w, xs, y_rank, ids, M, n):
         while i < n:
             x_val = xs[ids[i]]
 
-            #TODO maybe sort groups in the beginig?
             group = []
             while i < n and xs[ids[i]] == x_val:
                 group.append(ids[i])
                 i += 1
 
-            # why we need tmp?
             tmp = []
             for pid in group:
                 r = y_rank[pid]
@@ -80,7 +78,7 @@ def oracle(w, xs, y_rank, ids, M, n):
 
 
 # ---------- Pretty progress bar (no external deps) ----------
-def print_progress(t, T, best_score, S, score, bar_width=32):
+def print_progress(t, T, best_score, S, score, delta, bar_width=32):
     """
     Lightweight progress bar + metrics.
     Prints in-place (no new line) except at the end.
@@ -93,7 +91,8 @@ def print_progress(t, T, best_score, S, score, bar_width=32):
            f"iter {t}/{T} | "
            f"S={S:9.6f} | "
            f"score={score:12.8f} | "
-           f"best={best_score:12.8f}")
+           f"best={best_score:12.8f} | "
+           f"delta={delta: .3e}")
     end = "\n" if t == T else ""
     print(msg, end=end, flush=True)
 
@@ -114,7 +113,6 @@ def compute_depth_lengths(xs, y_rank, ids, M, n):
     while i < n:
         x_val = xs[ids[i]]
 
-        # Collect equal-x group
         group = []
         while i < n and xs[ids[i]] == x_val:
             group.append(ids[i])
@@ -127,7 +125,6 @@ def compute_depth_lengths(xs, y_rank, ids, M, n):
             dp_len[pid] = best_v + 1.0
             tmp.append(pid)
 
-        # Update Fenwick after the group
         for pid in tmp:
             fenw.update(y_rank[pid], dp_len[pid], pid)
 
@@ -172,50 +169,65 @@ def solve(points, max_iter=10000, tol=1e-6):
     eps = 1e-4
     eta0 = 1e-2
 
-    # ---------- CHANGED ONLY: initialization of w_init and s ----------
-    # Init #1: depth-layers feasible initialization
+    # --- Hyperparameters for the two fixes (tuned for stability on n up to ~10k) ---
+    noise_scale = 1e-12   # tiny noise for oracle tie-breaking (very small on purpose)
+    bias_factor = 0.05    # bias = bias_factor * eta (eta = eta0/sqrt(t))
+    rng = np.random.default_rng(12345)  # deterministic noise for reproducibility
+
+    # ---------- Init1: depth-layers feasible initialization ----------
     depth, L = compute_depth_lengths(xs, y_rank, ids, M, n)
     w_init = init_weights_layer(depth, L, n, beta=1.0)
 
-    # Keep algorithm identical: w = 1/s, so choose s such that w_init == 1/s
+    # Keep algorithm structure identical: w = 1/s
     s = 1.0 / np.maximum(w_init, eps)
-    # ---------- END CHANGE ----------
 
     best_score = float("inf")
     best_w = None
 
-    # Print progress ~200 times total (I/O only)
+    # Print progress ~200 times total
     print_every = max(1, max_iter // 200)
 
     for t in range(1, max_iter + 1):
         w = 1.0 / s
 
-        chain, S = oracle(w, xs, y_rank, ids, M, n)
+        # ---- Fix #2: oracle diversification via tiny multiplicative noise ----
+        # This is only to break ties / avoid repeating the exact same chain.
+        w_noisy = w * (1.0 + noise_scale * rng.standard_normal(n))
+        # keep weights non-negative (noise is tiny; this is just a safety clamp)
+        w_noisy = np.maximum(w_noisy, 0.0)
+
+        chain, S = oracle(w_noisy, xs, y_rank, ids, M, n)
 
         scale = max(S, 1.0)
-        w_feas = w / scale
+        w_feas = w / scale  # objective computed on true current w (not noisy)
 
         score = -(np.log2(np.maximum(w_feas, eps)).sum() / n)
 
+        # ---- Fix #1: tie-breaking push (bias) so we keep moving even when S==1 ----
+        eta = eta0 / math.sqrt(t)
+        bias = bias_factor * eta
+        delta = eta0 * (S - 1.0) + bias
+
         # --- Progress output (I/O only) ---
         if (t == 1) or (t % print_every == 0) or (t == max_iter):
-            print_progress(t, max_iter, best_score, S, score)
+            print_progress(t, max_iter, best_score, S, score, delta)
 
         if score < best_score and S <= 1 + tol:
             best_score = score
             best_w = w_feas.copy()
 
-        # Keep your original update rule (sterile comparison)
-        eta = eta0 / math.sqrt(t)
-        delta = eta0 * (S - 1.0)
         for pid in chain:
             s[pid] += delta
+
+        # Safety: keep s positive to avoid division issues (rare but important long-run)
+        if np.any(s <= 0):
+            s = np.maximum(s, eps)
 
     return best_w, best_score
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Heaviest chain optimizer")
+    parser = argparse.ArgumentParser(description="Heaviest chain optimizer (Init1 + bias + noise)")
 
     parser.add_argument("-p", "--points", type=str, default="points_1000.xlsx",
                         help="Excel file containing point list (x,y)")
@@ -228,13 +240,10 @@ def main():
 
     args = parser.parse_args()
 
-    # --- Load points ---
     pts = ExcelReader.read_points(args.points)
 
-    # --- Run solver ---
     w, score = solve(pts, args.iters, tol=args.tol)
 
-    # --- Output ---
     print("score:", score)
     return score
 
