@@ -79,12 +79,32 @@ def oracle(w, xs, y_rank, ids, M, n):
         return chain, best_sum
 
 
+# ---------- Pretty progress bar (no external deps) ----------
+def print_progress(t, T, best_score, S, score, bar_width=32):
+    """
+    Lightweight progress bar + metrics.
+    Prints in-place (no new line) except at the end.
+    I/O only: does not affect optimization.
+    """
+    frac = t / T
+    filled = int(bar_width * frac)
+    bar = "█" * filled + "░" * (bar_width - filled)
+    msg = (f"\r[{bar}] {100*frac:6.2f}% | "
+           f"iter {t}/{T} | "
+           f"S={S:9.6f} | "
+           f"score={score:12.8f} | "
+           f"best={best_score:12.8f}")
+    end = "\n" if t == T else ""
+    print(msg, end=end, flush=True)
+
+
 # ---------- Init #1 helpers: depth-layers feasible ----------
 def compute_depth_lengths(xs, y_rank, ids, M, n):
     """
     Compute depth[i] = length of the longest chain ending at i (strict dominance).
-    We enforce strictness in x by delaying Fenwick updates within equal-x groups,
-    and strictness in y by querying r-1.
+    Strictness is enforced by:
+      - delayed updates within equal-x groups
+      - query(r-1) for strict y
     Runtime: O(n log M)
     """
     fenw = FenwickMax(M)
@@ -119,9 +139,11 @@ def compute_depth_lengths(xs, y_rank, ids, M, n):
 def init_weights_layer(depth, L, n, beta=1.0):
     """
     Feasible-by-construction initialization:
-      - Let A_k = {i : depth(i) = k}, counts[k] = |A_k|
-      - Assign w_i = alpha_{depth(i)} where alpha_k = (counts[k] + beta) / (n + beta*L)
-    Any chain has at most one point per depth k, so sum over chain <= sum_k alpha_k = 1.
+      - A_k = {i : depth(i) = k}
+      - alpha_k = (|A_k| + beta) / (n + beta*L)
+      - w_i = alpha_{depth(i)}
+
+    Any chain has at most one point per depth k, so chain weight <= sum_k alpha_k = 1.
     """
     counts = np.bincount(depth, minlength=L + 1).astype(float)
     denom = n + beta * L
@@ -134,13 +156,13 @@ def init_weights_layer(depth, L, n, beta=1.0):
     return w_init
 
 
-def solve(points,max_iter=10000,tol=1e-6):
+def solve(points, max_iter=10000, tol=1e-6):
     n = len(points)
     xs = np.array([p[0] for p in points], dtype=float)
     ys = np.array([p[1] for p in points], dtype=float)
 
     ys_sorted_unique = sorted(set(ys))
-    y_to_rank = {y: i+1 for i, y in enumerate(ys_sorted_unique)}
+    y_to_rank = {y: i + 1 for i, y in enumerate(ys_sorted_unique)}
     y_rank = np.array([y_to_rank[y] for y in ys], dtype=int)
     M = len(ys_sorted_unique)
 
@@ -151,18 +173,19 @@ def solve(points,max_iter=10000,tol=1e-6):
     eta0 = 1e-2
 
     # ---------- CHANGED ONLY: initialization of w_init and s ----------
-    # Init #1 (Depth-layers feasible):
+    # Init #1: depth-layers feasible initialization
     depth, L = compute_depth_lengths(xs, y_rank, ids, M, n)
     w_init = init_weights_layer(depth, L, n, beta=1.0)
 
-    # Keep the rest of the algorithm identical: w = 1/s
-    # So choose s such that 1/s == w_init
+    # Keep algorithm identical: w = 1/s, so choose s such that w_init == 1/s
     s = 1.0 / np.maximum(w_init, eps)
     # ---------- END CHANGE ----------
 
-
     best_score = float("inf")
     best_w = None
+
+    # Print progress ~200 times total (I/O only)
+    print_every = max(1, max_iter // 200)
 
     for t in range(1, max_iter + 1):
         w = 1.0 / s
@@ -174,11 +197,15 @@ def solve(points,max_iter=10000,tol=1e-6):
 
         score = -(np.log2(np.maximum(w_feas, eps)).sum() / n)
 
+        # --- Progress output (I/O only) ---
+        if (t == 1) or (t % print_every == 0) or (t == max_iter):
+            print_progress(t, max_iter, best_score, S, score)
+
         if score < best_score and S <= 1 + tol:
             best_score = score
             best_w = w_feas.copy()
 
-        # TODO lerenig rate to high?
+        # Keep your original update rule (sterile comparison)
         eta = eta0 / math.sqrt(t)
         delta = eta0 * (S - 1.0)
         for pid in chain:
@@ -193,7 +220,7 @@ def main():
     parser.add_argument("-p", "--points", type=str, default="points_1000.xlsx",
                         help="Excel file containing point list (x,y)")
 
-    parser.add_argument("-i", "--iters", type=int,default=100000,
+    parser.add_argument("-i", "--iters", type=int, default=100000,
                         help="Maximum number of iterations")
 
     parser.add_argument("-t", "--tol", type=float, default=1e-6,

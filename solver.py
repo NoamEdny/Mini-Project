@@ -79,6 +79,25 @@ def oracle(w, xs, y_rank, ids, M, n):
         return chain, best_sum
 
 
+# ---------- Pretty progress bar (no external deps) ----------
+def print_progress(t, T, best_score, S, score, bar_width=32):
+    """
+    Lightweight progress bar + metrics.
+    Prints in-place (no new line) except at the end.
+    I/O only: does not affect optimization.
+    """
+    frac = t / T
+    filled = int(bar_width * frac)
+    bar = "█" * filled + "░" * (bar_width - filled)
+    msg = (f"\r[{bar}] {100*frac:6.2f}% | "
+           f"iter {t}/{T} | "
+           f"S={S:9.6f} | "
+           f"score={score:12.8f} | "
+           f"best={best_score:12.8f}")
+    end = "\n" if t == T else ""
+    print(msg, end=end, flush=True)
+
+
 def solve(points,max_iter=10000,tol=1e-6):
     n = len(points)
     xs = np.array([p[0] for p in points], dtype=float)
@@ -104,6 +123,9 @@ def solve(points,max_iter=10000,tol=1e-6):
     best_score = float("inf")
     best_w = None
 
+    # Print progress ~200 times total (I/O only)
+    print_every = max(1, max_iter // 200)
+
     for t in range(1, max_iter + 1):
         w = 1.0 / s
 
@@ -113,6 +135,10 @@ def solve(points,max_iter=10000,tol=1e-6):
         w_feas = w / scale
 
         score = -(np.log2(np.maximum(w_feas, eps)).sum() / n)
+
+        # --- Progress output (I/O only) ---
+        if (t == 1) or (t % print_every == 0) or (t == max_iter):
+            print_progress(t, max_iter, best_score, S, score)
 
         if score < best_score and S <= 1 + tol:
             best_score = score
