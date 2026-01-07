@@ -114,10 +114,12 @@ def solve(points,max_iter=10000,tol=1e-6):
     eps = 1e-4
     eta0 = 1e-2
 
-    #s = np.ones(n, dtype=float) # TODO think about diff starter?
+   # Initialize weights to 1 (i.e., w = 1/s starts as ones)
+    s = np.ones(n, dtype=float)
+
+    # Optional: keep these only if you want an initial S for logging/debug
     w_init = np.ones(n, dtype=float)
     chain, S = oracle(w_init, xs, y_rank, ids, M, n)
-    s = np.ones(n, dtype=float) * S * 1.1 #TODO : chosse const
 
 
     best_score = float("inf")
@@ -140,7 +142,7 @@ def solve(points,max_iter=10000,tol=1e-6):
         if (t == 1) or (t % print_every == 0) or (t == max_iter):
             print_progress(t, max_iter, best_score, S, score)
 
-        if score < best_score and S <= 1 + tol:
+        if score < best_score:
             best_score = score
             best_w = w_feas.copy()
 
@@ -156,10 +158,10 @@ def solve(points,max_iter=10000,tol=1e-6):
 def main():
     parser = argparse.ArgumentParser(description="Heaviest chain optimizer")
 
-    parser.add_argument("-p", "--points", type=str, default="points_1000.xlsx",
+    parser.add_argument("-p", "--points", type=str, default="points_10000_xy.xlsx",
                         help="Excel file containing point list (x,y)")
 
-    parser.add_argument("-i", "--iters", type=int,default=100000,
+    parser.add_argument("-i", "--iters", type=int,default=10000,
                         help="Maximum number of iterations")
 
     parser.add_argument("-t", "--tol", type=float, default=1e-6,

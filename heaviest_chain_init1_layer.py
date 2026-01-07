@@ -212,7 +212,7 @@ def solve(points, max_iter=10000, tol=1e-6):
         if (t == 1) or (t % print_every == 0) or (t == max_iter):
             print_progress(t, max_iter, best_score, S, score, delta)
 
-        if score < best_score and S <= 1 + tol:
+        if score < best_score :
             best_score = score
             best_w = w_feas.copy()
 
@@ -229,10 +229,10 @@ def solve(points, max_iter=10000, tol=1e-6):
 def main():
     parser = argparse.ArgumentParser(description="Heaviest chain optimizer (Init1 + bias + noise)")
 
-    parser.add_argument("-p", "--points", type=str, default="points_1000.xlsx",
+    parser.add_argument("-p", "--points", type=str, default="points_10000_xy",
                         help="Excel file containing point list (x,y)")
 
-    parser.add_argument("-i", "--iters", type=int, default=100000,
+    parser.add_argument("-i", "--iters", type=int, default=10000,
                         help="Maximum number of iterations")
 
     parser.add_argument("-t", "--tol", type=float, default=1e-6,
