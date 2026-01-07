@@ -152,13 +152,15 @@ def solve(points, max_iter=10000, tol=1e-6):
     sorted_ids = list(range(n))
     sorted_ids.sort(key=lambda i: (xs[i], ys[i]))
 
-        # ---------- Init1: depth-layers feasible initialization ----------
-    depth, L = compute_depth_lengths(xs, y_rank, ids, M, n)
+    # ---------- Init1: depth-layers feasible initialization ----------
+    depth, L = compute_depth_lengths(xs, y_rank, sorted_ids, num_y_levels, n)
     w_init = init_weights_layer(depth, L, n, beta=1.0)
 
     best_score = float("inf")
     best_w = None
 
+    grad_accum = np.zeros(n)
+    eps = 1e-8
     influenceFactor = 1.0 / np.maximum(w_init, eps)
 
     # ----- Optimization loop -----
