@@ -78,7 +78,7 @@ def oracle(point_weight, xs, y_rank, sorted_ids, num_y_levels, n):
 
 def solve(points, max_iter=10000, tol=1e-6):
     # ================= Hyper-parameters =================
-    base_lr = 1      # learning rate
+    base_lr = 5      # learning rate
     influence_scale = 1.1 # multiplier for initial influenceFactor
     lr_func = math.sqrt # learning rate decay function: lr = base_lr / lr_func(t)
     # ====================================================
@@ -108,6 +108,9 @@ def solve(points, max_iter=10000, tol=1e-6):
     best_score = float("inf")
     best_weights = None
 
+    grad_accum = np.zeros(n)
+    eps = 1e-8
+
     influenceFactor = np.ones(n, dtype=float)
 
     # ----- Optimization loop -----
@@ -123,23 +126,27 @@ def solve(points, max_iter=10000, tol=1e-6):
 
         score = -(np.log2(feasible_weight)).sum() / n
 
+        if score < best_score:
+            best_score = score
+            best_weights = feasible_weight.copy()
+
         if(t%50 == 0) or t < 50:
             msg = (
            f"iter {t}/{max_iter} | "
            f"S={chain_weight:9.6f} | "
            f"score={score:12.8f} | "
-           f"best={best_score:12.8f}, feasible_weight= {feasible_weight}")
+           f"best={best_score:12.8f}")
             print(f"{msg}")
-
-        if score < best_score:
-            best_score = score
-            best_weights = feasible_weight.copy()
+            #print(f"feasible_weight= {feasible_weight}")
 
         lr = base_lr / lr_func(t)
         delta = base_lr * (chain_weight - 1.0)
 
         for pt in chain:
-            influenceFactor[pt] += delta
+            grad_accum[pt] += delta**2
+            adjusted_delta = delta / math.sqrt(grad_accum[pt] + eps)
+            influenceFactor[pt] += adjusted_delta
+
 
     return best_weights, best_score
 
@@ -159,7 +166,7 @@ def main():
     args = parser.parse_args()
 
     points = ExcelReader.read_points(args.points)
-    points = [[0,0],[0.1,1],[0.5,0.5],[1,0.9]] #sb
+    #points = [[0,0],[0.1,1],[0.5,0.5],[1,0.9]] #sb
 
     weights, score = solve(points, args.iters, tol=args.tol)
 
