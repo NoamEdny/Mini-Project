@@ -75,6 +75,61 @@ def oracle(point_weight, xs, y_rank, sorted_ids, num_y_levels, n):
     chain.reverse()
     return chain, max_chain_weight
 
+# ---------- Init #1 helpers: depth-layers feasible ----------
+def compute_depth_lengths(xs, y_rank, ids, M, n):
+    """
+    Compute depth[i] = length of the longest chain ending at i (strict dominance).
+    Strictness is enforced by:
+      - delayed updates within equal-x groups
+      - query(r-1) for strict y
+    Runtime: O(n log M)
+    """
+    fenw = FenwickMax(M)
+    dp_len = np.zeros(n, dtype=float)
+
+    i = 0
+    while i < n:
+        x_val = xs[ids[i]]
+
+        group = []
+        while i < n and xs[ids[i]] == x_val:
+            group.append(ids[i])
+            i += 1
+
+        tmp = []
+        for pid in group:
+            r = y_rank[pid]
+            best_v, _ = fenw.query(r - 1)
+            dp_len[pid] = best_v + 1.0
+            tmp.append(pid)
+
+        for pid in tmp:
+            fenw.update(y_rank[pid], dp_len[pid], pid)
+
+    depth = dp_len.astype(int)
+    L = int(dp_len.max()) if n > 0 else 0
+    return depth, L
+
+
+def init_weights_layer(depth, L, n, beta=1.0):
+    """
+    Feasible-by-construction initialization:
+      - A_k = {i : depth(i) = k}
+      - alpha_k = (|A_k| + beta) / (n + beta*L)
+      - w_i = alpha_{depth(i)}
+
+    Any chain has at most one point per depth k, so chain weight <= sum_k alpha_k = 1.
+    """
+    counts = np.bincount(depth, minlength=L + 1).astype(float)
+    denom = n + beta * L
+
+    alpha = np.zeros(L + 1, dtype=float)
+    for k in range(1, L + 1):
+        alpha[k] = (counts[k] + beta) / denom
+
+    w_init = np.array([alpha[d] for d in depth], dtype=float)
+    return w_init
+
 
 def solve(points, max_iter=10000, tol=1e-6):
     # ================= Hyper-parameters =================
@@ -97,21 +152,14 @@ def solve(points, max_iter=10000, tol=1e-6):
     sorted_ids = list(range(n))
     sorted_ids.sort(key=lambda i: (xs[i], ys[i]))
 
-    # ----- Initialization -----
-    init_weight = np.ones(n, dtype=float)
-    chain, chain_weight = oracle(
-        init_weight, xs, y_rank, sorted_ids, num_y_levels, n
-    )
-
-    influenceFactor = np.ones(n, dtype=float) * chain_weight * influence_scale
+        # ---------- Init1: depth-layers feasible initialization ----------
+    depth, L = compute_depth_lengths(xs, y_rank, ids, M, n)
+    w_init = init_weights_layer(depth, L, n, beta=1.0)
 
     best_score = float("inf")
-    best_weights = None
+    best_w = None
 
-    grad_accum = np.zeros(n)
-    eps = 1e-8
-
-    influenceFactor = np.ones(n, dtype=float)
+    influenceFactor = 1.0 / np.maximum(w_init, eps)
 
     # ----- Optimization loop -----
     for t in range(1, max_iter + 1):

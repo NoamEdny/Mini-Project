@@ -2,100 +2,78 @@
 
 import math
 import numpy as np
-from collections import defaultdict
 from read_from_excel import ExcelReader
 import argparse
 
+
 # ---------- Fenwick Tree for prefix MAX (value, index) ----------
 class FenwickMax:
-    def __init__(self, n):
-        self.n = n
-        # store (best_value, best_index)
-        self.bit_val = np.zeros(n + 1, dtype=float)
-        self.bit_idx = np.full(n + 1, -1, dtype=int)
+    def __init__(self, size):
+        self.size = size
+        self.best_value = np.zeros(size + 1, dtype=float)
+        self.best_index = np.full(size + 1, -1, dtype=int)
 
-    # runtime: O(log M), Where M is the num of uniq ys valves
     def update(self, i, value, idx):
-        n = self.n
-        while i <= n:
-            if value > self.bit_val[i]:
-                self.bit_val[i] = value
-                self.bit_idx[i] = idx
+        while i <= self.size:
+            if value > self.best_value[i]:
+                self.best_value[i] = value
+                self.best_index[i] = idx
             i += i & -i
 
-    # runtime: O(log M), Where M is the num of uniq ys valves
     def query(self, i):
-        best_v = 0.0
-        best_prev = -1
+        max_value = 0.0
+        max_index = -1
         while i > 0:
-            if self.bit_val[i] > best_v:
-                best_v = self.bit_val[i]
-                best_prev = self.bit_idx[i]
+            if self.best_value[i] > max_value:
+                max_value = self.best_value[i]
+                max_index = self.best_index[i]
             i -= i & -i
-        return best_v, best_prev
+        return max_value, max_index
 
 
-# ---------- oracle implemented (to find the heaviest chain) ----------
-def oracle(w, xs, y_rank, ids, M, n):
-        fenw = FenwickMax(M)
-        dp = np.zeros(n, dtype=float)
-        parent = np.full(n, -1, dtype=int)
+# ---------- Oracle: find heaviest increasing chain ----------
+def oracle(point_weight, xs, y_rank, sorted_ids, num_y_levels, n):
+    fenwick = FenwickMax(num_y_levels)
 
-        i = 0
-        best_end = -1
-        best_sum = 0.0
+    best_chain_weight = np.zeros(n, dtype=float)
+    prev_point = np.full(n, -1, dtype=int)
 
-        while i < n:
-            x_val = xs[ids[i]]
+    i = 0
+    best_chain_end = -1
+    max_chain_weight = 0.0
 
-            group = []
-            while i < n and xs[ids[i]] == x_val:
-                group.append(ids[i])
-                i += 1
+    while i < n:
+        x_val = xs[sorted_ids[i]]
 
-            tmp = []
-            for pid in group:
-                r = y_rank[pid]
-                best_v, best_prev = fenw.query(r - 1)
-                dp[pid] = w[pid] + best_v
-                parent[pid] = best_prev
-                tmp.append(pid)
+        same_x_group = []
+        while i < n and xs[sorted_ids[i]] == x_val:
+            same_x_group.append(sorted_ids[i])
+            i += 1
 
-                if dp[pid] > best_sum:
-                    best_sum = dp[pid]
-                    best_end = pid
+        pending_updates = []
+        for pt in same_x_group:
+            y_idx = y_rank[pt]
+            prev_weight, prev_pt = fenwick.query(y_idx - 1)
 
-            for pid in tmp:
-                fenw.update(y_rank[pid], dp[pid], pid)
+            best_chain_weight[pt] = point_weight[pt] + prev_weight
+            prev_point[pt] = prev_pt
+            pending_updates.append(pt)
 
-        chain = []
-        cur = best_end
-        while cur != -1:
-            chain.append(cur)
-            cur = parent[cur]
-        chain.reverse()
-        return chain, best_sum
+            if best_chain_weight[pt] > max_chain_weight:
+                max_chain_weight = best_chain_weight[pt]
+                best_chain_end = pt
 
+        for pt in pending_updates:
+            fenwick.update(y_rank[pt], best_chain_weight[pt], pt)
 
-# ---------- Pretty progress bar (no external deps) ----------
-def print_progress(t, T, best_score, S, score, delta, bar_width=32):
-    """
-    Lightweight progress bar + metrics.
-    Prints in-place (no new line) except at the end.
-    I/O only: does not affect optimization.
-    """
-    frac = t / T
-    filled = int(bar_width * frac)
-    bar = "█" * filled + "░" * (bar_width - filled)
-    msg = (f"\r[{bar}] {100*frac:6.2f}% | "
-           f"iter {t}/{T} | "
-           f"S={S:9.6f} | "
-           f"score={score:12.8f} | "
-           f"best={best_score:12.8f} | "
-           f"delta={delta: .3e}")
-    end = "\n" if t == T else ""
-    print(msg, end=end, flush=True)
+    chain = []
+    cur = best_chain_end
+    while cur != -1:
+        chain.append(cur)
+        cur = prev_point[cur]
 
+    chain.reverse()
+    return chain, max_chain_weight
 
 # ---------- Init #1 helpers: depth-layers feasible ----------
 def compute_depth_lengths(xs, y_rank, ids, M, n):
@@ -154,95 +132,91 @@ def init_weights_layer(depth, L, n, beta=1.0):
 
 
 def solve(points, max_iter=10000, tol=1e-6):
+    # ================= Hyper-parameters =================
+    base_lr = 5      # learning rate
+    influence_scale = 1.1 # multiplier for initial influenceFactor
+    lr_func = math.sqrt # learning rate decay function: lr = base_lr / lr_func(t)
+    # ====================================================
+
     n = len(points)
+
     xs = np.array([p[0] for p in points], dtype=float)
     ys = np.array([p[1] for p in points], dtype=float)
 
-    ys_sorted_unique = sorted(set(ys))
-    y_to_rank = {y: i + 1 for i, y in enumerate(ys_sorted_unique)}
+    # Rank y-coordinates
+    unique_ys = sorted(set(ys))
+    y_to_rank = {y: i + 1 for i, y in enumerate(unique_ys)}
     y_rank = np.array([y_to_rank[y] for y in ys], dtype=int)
-    M = len(ys_sorted_unique)
+    num_y_levels = len(unique_ys)
 
-    ids = list(range(n))
-    ids.sort(key=lambda i: (xs[i], ys[i]))
+    sorted_ids = list(range(n))
+    sorted_ids.sort(key=lambda i: (xs[i], ys[i]))
 
-    eps = 1e-4
-    eta0 = 1e-2
-
-    # --- Hyperparameters for the two fixes (tuned for stability on n up to ~10k) ---
-    noise_scale = 1e-12   # tiny noise for oracle tie-breaking (very small on purpose)
-    bias_factor = 0.05    # bias = bias_factor * eta (eta = eta0/sqrt(t))
-    rng = np.random.default_rng(12345)  # deterministic noise for reproducibility
-
-    # ---------- Init1: depth-layers feasible initialization ----------
+        # ---------- Init1: depth-layers feasible initialization ----------
     depth, L = compute_depth_lengths(xs, y_rank, ids, M, n)
     w_init = init_weights_layer(depth, L, n, beta=1.0)
-
-    # Keep algorithm structure identical: w = 1/s
-    s = 1.0 / np.maximum(w_init, eps)
 
     best_score = float("inf")
     best_w = None
 
-    # Print progress ~200 times total
-    print_every = max(1, max_iter // 200)
+    influenceFactor = 1.0 / np.maximum(w_init, eps)
 
+    # ----- Optimization loop -----
     for t in range(1, max_iter + 1):
-        w = 1.0 / s
+        point_weight = 1.0 / influenceFactor
 
-        # ---- Fix #2: oracle diversification via tiny multiplicative noise ----
-        # This is only to break ties / avoid repeating the exact same chain.
-        w_noisy = w * (1.0 + noise_scale * rng.standard_normal(n))
-        # keep weights non-negative (noise is tiny; this is just a safety clamp)
-        w_noisy = np.maximum(w_noisy, 0.0)
+        chain, chain_weight = oracle(
+            point_weight, xs, y_rank, sorted_ids, num_y_levels, n
+        )
 
-        chain, S = oracle(w_noisy, xs, y_rank, ids, M, n)
+        scale = max(chain_weight, 1.0)
+        feasible_weight = point_weight / scale
 
-        scale = max(S, 1.0)
-        w_feas = w / scale  # objective computed on true current w (not noisy)
+        score = -(np.log2(feasible_weight)).sum() / n
 
-        score = -(np.log2(np.maximum(w_feas, eps)).sum() / n)
-
-        # ---- Fix #1: tie-breaking push (bias) so we keep moving even when S==1 ----
-        eta = eta0 / math.sqrt(t)
-        bias = bias_factor * eta
-        delta = eta0 * (S - 1.0) + bias
-
-        # --- Progress output (I/O only) ---
-        if (t == 1) or (t % print_every == 0) or (t == max_iter):
-            print_progress(t, max_iter, best_score, S, score, delta)
-
-        if score < best_score :
+        if score < best_score:
             best_score = score
-            best_w = w_feas.copy()
+            best_weights = feasible_weight.copy()
 
-        for pid in chain:
-            s[pid] += delta
+        if(t%50 == 0) or t < 50:
+            msg = (
+           f"iter {t}/{max_iter} | "
+           f"S={chain_weight:9.6f} | "
+           f"score={score:12.8f} | "
+           f"best={best_score:12.8f}")
+            print(f"{msg}")
+            #print(f"feasible_weight= {feasible_weight}")
 
-        # Safety: keep s positive to avoid division issues (rare but important long-run)
-        if np.any(s <= 0):
-            s = np.maximum(s, eps)
+        lr = base_lr / lr_func(t)
+        delta = base_lr * (chain_weight - 1.0)
 
-    return best_w, best_score
+        for pt in chain:
+            grad_accum[pt] += delta**2
+            adjusted_delta = delta / math.sqrt(grad_accum[pt] + eps)
+            influenceFactor[pt] += adjusted_delta
+
+
+    return best_weights, best_score
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Heaviest chain optimizer (Init1 + bias + noise)")
+    parser = argparse.ArgumentParser(description="Heaviest chain optimizer")
 
-    parser.add_argument("-p", "--points", type=str, default="points_10000_xy",
+    parser.add_argument("-p", "--points", type=str, default="points_1000.xlsx",
                         help="Excel file containing point list (x,y)")
 
-    parser.add_argument("-i", "--iters", type=int, default=10000,
+    parser.add_argument("-i", "--iters", type=int, default=100000,
                         help="Maximum number of iterations")
 
     parser.add_argument("-t", "--tol", type=float, default=1e-6,
-                        help="Tolerance value (default: 1e-6)")
+                        help="Tolerance value")
 
     args = parser.parse_args()
 
-    pts = ExcelReader.read_points(args.points)
+    points = ExcelReader.read_points(args.points)
+    #points = [[0,0],[0.1,1],[0.5,0.5],[1,0.9]] #sb
 
-    w, score = solve(pts, args.iters, tol=args.tol)
+    weights, score = solve(points, args.iters, tol=args.tol)
 
     print("score:", score)
     return score
